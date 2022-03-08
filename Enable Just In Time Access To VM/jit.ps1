@@ -5,6 +5,7 @@ $rg = "VirtualWorkloads-AVS"
 $region = "westus"
 
 
+
 $JitPolicyVm1 = (@{
     id="/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.Compute/virtualMachines/$vmname";
     ports=(@{
