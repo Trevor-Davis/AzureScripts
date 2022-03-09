@@ -1,8 +1,9 @@
-$myip = (Invoke-WebRequest -uri "http://ifconfig.me/ip").Content
 $vmname = "VirtualWorkloads-Jumpbox"
 $sub = "3988f2d0-8066-42fa-84f2-5d72f80901da"
 $rg = "VirtualWorkloads-AVS"
 $region = "westus"
+$myip = (Invoke-WebRequest -uri "http://ifconfig.me/ip").Content
+
 
 function azurelogin {
 
@@ -23,9 +24,6 @@ $ErrorActionPreference = "Continue"; $WarningPreference = "Continue"
   }
   
 azurelogin -subtoconnect $sub
-
-
-
 
 $JitPolicyVm1 = (@{
     id="/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.Compute/virtualMachines/$vmname";
