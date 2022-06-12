@@ -14,11 +14,9 @@ asn_quagga=65001
 bgp_routerId=10.2.5.4
 bgp_network1=10.99.99.0/24
 bgp_network2=0.0.0.0/0
+bgp_network3=10.100.3.0/24
 routeserver_IP1=10.2.2.4
 routeserver_IP2=10.2.2.5
-
-
-
 
 sudo apt-get -y update
 
