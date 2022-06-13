@@ -11,7 +11,7 @@
 ## routeserver_IP2: second IP address of the router server
 
 asn_quagga=65001
-bgp_routerId=10.2.5.4
+bgp_routerId=10.2.5.5
 bgp_network1=10.99.99.0/24
 routeserver_IP1=10.2.2.4
 routeserver_IP2=10.2.2.5
@@ -91,8 +91,6 @@ cat <<EOF > /etc/quagga/bgpd.conf
 router bgp $asn_quagga
  bgp router-id $bgp_routerId
  network $bgp_network1
- network $bgp_network2
- network $bgp_network3
  neighbor $routeserver_IP1 remote-as 65515
  neighbor $routeserver_IP1 soft-reconfiguration inbound
  neighbor $routeserver_IP2 remote-as 65515
