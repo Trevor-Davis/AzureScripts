@@ -1,6 +1,6 @@
-$vmname = "VirtualWorkloads-Jumpbox"
+$vmname = "tredavis-vdi"
 $sub = "3988f2d0-8066-42fa-84f2-5d72f80901da"
-$rg = "VirtualWorkloads-AVS"
+$rg = "VirtualDesktop"
 $myip = (Invoke-WebRequest -uri "http://ifconfig.me/ip").Content
 
 
