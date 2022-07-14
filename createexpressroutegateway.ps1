@@ -5,7 +5,8 @@ Clear-Host
 . $env:TEMP\AVSDeploy\$filename
 
 
-if ("Yes" -ne $buildhol_ps1 -or "Yes" -ne $avsdeploy_ps1){
+if ($buildhol_ps1 -notmatch "Yes" -and $avsdeploy_ps1 -notmatch "Yes"){
+  Write-Host "No"
     $sub = "abf039b4-3e19-40ad-a85e-93937bd8a4bc"
     $vnetgwsub = $global:sub
     $vnet = "avs-hol-vnet"
@@ -19,16 +20,16 @@ if ("Yes" -ne $buildhol_ps1 -or "Yes" -ne $avsdeploy_ps1){
 
   azurelogin -subtoconnect $vnetgwsub
     
-  $vnet = Get-AzVirtualNetwork -Name $vnet -ResourceGroupName $vnetrg
-  $vnet
+  $getvirtualnetwork = Get-AzVirtualNetwork -Name $vnet -ResourceGroupName $vnetrg
+  $getvirtualnetwork
   
-  $vnet = Set-AzVirtualNetwork -VirtualNetwork $vnet
-  $vnet
+  $setvirtualnetwork = Set-AzVirtualNetwork -VirtualNetwork $vnet
+  $setvirtualnetwork
   
-  $subnet = Get-AzVirtualNetworkSubnetConfig -Name 'GatewaySubnet' -VirtualNetwork $vnet
+  $subnet = Get-AzVirtualNetworkSubnetConfig -Name 'GatewaySubnet' -VirtualNetwork $setvirtualnetwork
   $subnet
   
-  $pip = New-AzPublicIpAddress -Name $exrgwipname  -ResourceGroupName $exrgwrg -Location $exrgwregion -AllocationMethod Dynamic
+  $pip = New-AzPublicIpAddress -Name $exrgwipname -ResourceGroupName $exrgwrg -Location $exrgwregion -AllocationMethod Dynamic
   $pip
   if ($pip.ProvisioningState -ne "Succeeded"){Write-Host -ForegroundColor Red "Creation of the Public IP Failed"
   Exit}
