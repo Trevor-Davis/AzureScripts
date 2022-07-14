@@ -20,13 +20,13 @@ if ($buildhol_ps1 -notmatch "Yes" -and $avsdeploy_ps1 -notmatch "Yes"){
 
   azurelogin -subtoconnect $vnetgwsub
     
-  $getvirtualnetwork = Get-AzVirtualNetwork -Name $vnet -ResourceGroupName $vnetrg
-  $getvirtualnetwork
+  $vnet = Get-AzVirtualNetwork -Name $vnet -ResourceGroupName $vnetrg
+  $vnet
   
-  $setvirtualnetwork = Set-AzVirtualNetwork -VirtualNetwork $vnet
-  $setvirtualnetwork
+  $vnet = Set-AzVirtualNetwork -VirtualNetwork $vnet
+  $vnet
   
-  $subnet = Get-AzVirtualNetworkSubnetConfig -Name 'GatewaySubnet' -VirtualNetwork $setvirtualnetwork
+  $subnet = Get-AzVirtualNetworkSubnetConfig -Name 'GatewaySubnet' -VirtualNetwork $vnet
   $subnet
   
   $pip = New-AzPublicIpAddress -Name $exrgwipname -ResourceGroupName $exrgwrg -Location $exrgwregion -AllocationMethod Dynamic
