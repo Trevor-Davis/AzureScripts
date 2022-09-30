@@ -1,0 +1,10 @@
+subscription=3988f2d0-8066-42fa-84f2-5d72f80901da
+
+az login
+az account set --subscription $subscription
+
+az provider register --namespace Microsoft.ConnectedVMwarevSphere 
+az provider register --namespace Microsoft.ExtendedLocation 
+az provider register --namespace Microsoft.KubernetesConfiguration 
+az provider register --namespace Microsoft.ResourceConnector 
+az provider register --namespace Microsoft.AVS
