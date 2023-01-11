@@ -5,5 +5,5 @@ function writeingreen {
       $messagetowrite 
   )
 Write-Host -ForegroundColor Green "$messagetowrite"
-Exit-PSHostProcess}
+Exit}
 
