@@ -20,6 +20,15 @@ function createexrgateway {
  $ipconf = New-AzVirtualNetworkGatewayIpConfig -Name $exrgwipname -Subnet $subnet -PublicIpAddress $pip -ErrorAction:Ignore
  $ipconf | ConvertTo-Json
  
+ #test to see if ExR GW exists
+$test = Get-AzVirtualNetworkGateway -ResourceGroupName $exrgwrg -Name $exrgwname
+
+if ($test.count -eq 1){Write-Host -ForegroundColor Blue "
+ExpressRoute Gateway $exrgwname Already Exists"
+}
+
+if ($test.count -eq 0){
+
  #create the gateway
 
 Write-Host -ForegroundColor Yellow "
@@ -35,4 +44,5 @@ ExpressRoute Gateway $exrgwname Failed to Create"
 Exit}
 If($test.count -eq 1){Write-Host -ForegroundColor Green "
 ExpressRoute Gateway $exrgwname Created"}
+}
 }
