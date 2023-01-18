@@ -1,61 +1,66 @@
-$filename = "azurelogin-function.ps1"
-Invoke-WebRequest -uri "https://raw.githubusercontent.com/Trevor-Davis/AzureScripts/main/Functions/$filename" `
--OutFile $env:TEMP\AVSDeploy\$filename
-Clear-Host
-. $env:TEMP\AVSDeploy\$filename
+#variables
+$vnet = $global:exrvnetname
+$resourcegroup = $global:exrgwrg
+$exrgwipname = $global:exrgwipname
+$region = $global:exrgwregion
+$exrgwname = $global:exrgwname
+$sub = $global:avssub
+$tenant = ""
 
+#DO NOT MODIFY BELOW THIS LINE #################################################
 
-if ($buildhol_ps1 -notmatch "Yes" -and $avsdeploy_ps1 -notmatch "Yes"){
-  Write-Host "No"
-    $sub = "abf039b4-3e19-40ad-a85e-93937bd8a4bc"
-    $vnetgwsub = $global:sub
-    $vnet = "avs-hol-vnet"
-    $vnetrg = "AVS-VMwareExplore-HOL-RG"
-    $exrgwrg = $global:vnetrg
-    $exrgwregion ="westeurope"
-    $exrgwname = "ExRGWforAVSHOL" #the new ExR GW name.
-    $exrgwipname = "ExRGWforAVSHOL-IP" #name of the public IP for ExR GW
-    $exrgwipconf = "gwipconf" #
+#Azure Login
+
+$filename = "Function-azurelogin.ps1"
+write-host "Downloading" $filename
+Invoke-WebRequest -uri "https://raw.githubusercontent.com/Trevor-Davis/AzureScripts/main/Functions/$filename" -OutFile $env:TEMP\$folder\$filename
+. $env:TEMP\$filename
+
+if ($tenanttoconnect -ne "") {
+  azurelogin -subtoconnect $sub -tenanttoconnect $tenant
+}
+else {
+  azurelogin -subtoconnect $sub 
 }
 
-  azurelogin -subtoconnect $vnetgwsub
-    
-  $vnet = Get-AzVirtualNetwork -Name $vnet -ResourceGroupName $vnetrg
-  $vnet
-  
-  $vnet = Set-AzVirtualNetwork -VirtualNetwork $vnet
-  $vnet
-  
-  $subnet = Get-AzVirtualNetworkSubnetConfig -Name 'GatewaySubnet' -VirtualNetwork $vnet
-  $subnet
-  
-  $pip = New-AzPublicIpAddress -Name $exrgwipname -ResourceGroupName $exrgwrg -Location $exrgwregion -AllocationMethod Dynamic
-  $pip
-  if ($pip.ProvisioningState -ne "Succeeded"){Write-Host -ForegroundColor Red "Creation of the Public IP Failed"
-  Exit}
-  
-  $ipconf = New-AzVirtualNetworkGatewayIpConfig -Name $exrgwipconf -Subnet $subnet -PublicIpAddress $pip
-  $ipconf
-  
-  Write-Host -ForegroundColor Yellow "
-  Creating a ExpressRoute Gateway ... this could take 30-40 minutes ..."
-  $command = New-AzVirtualNetworkGateway -Name $exrgwname -ResourceGroupName $exrgwrg -Location $exrgwregion -IpConfigurations $ipconf -GatewayType Expressroute -GatewaySku Standard
-  $command | ConvertTo-Json
-  
-  $timeStamp = Get-Date -Format "hh:mm"
-  $provisioningstate = Get-AzVirtualNetworkGateway -Name $exrgwname -ResourceGroupName $exrgwrg
-  $currentprovisioningstate = $provisioningstate.ProvisioningState
+#Execution
 
-  
-  If ("Succeeded" -ne $currentprovisioningstate)
-  {
-Write-Host -ForegroundColor Red "ExpressRoute Gateway Deployment Failed"
-Exit
-  }
-  
-  if("Succeeded" -eq $currentprovisioningstate)
-  {
-    Write-Host -ForegroundColor Green "$timestamp - ExpressRoute Gateway is Deployed"
-    
-  }
-  
+#get some info   
+$vnetforgateway = Get-AzVirtualNetwork -Name $vnet -ResourceGroupName $resourcegroup -ErrorAction:Ignore
+$vnetforgateway | ConvertTo-Json
+
+$subnet = Get-AzVirtualNetworkSubnetConfig -Name "GatewaySubnet" -VirtualNetwork $vnetforgateway -ErrorAction:Ignore
+$subnet | ConvertTo-Json
+
+#create public IP
+$pip = New-AzPublicIpAddress -Name $exrgwipname -ResourceGroupName $resourcegroup -Location $region -AllocationMethod Dynamic -ErrorAction:Ignore
+$pip | ConvertTo-Json
+
+$ipconf = New-AzVirtualNetworkGatewayIpConfig -Name $exrgwipname -Subnet $subnet -PublicIpAddress $pip -ErrorAction:Ignore
+$ipconf | ConvertTo-Json
+
+#test to see if ExR GW exists
+$test = Get-AzVirtualNetworkGateway -ResourceGroupName $resourcegroup -Name $exrgwname
+
+if ($test.count -eq 1){Write-Host -ForegroundColor Blue "
+ExpressRoute Gateway $exrgwname Already Exists"
+}
+
+if ($test.count -eq 0){
+
+#create the gateway
+
+Write-Host -ForegroundColor Yellow "
+Creating a ExpressRoute Gateway ... this could take 30-40 minutes ..."
+$command = New-AzVirtualNetworkGateway -Name $exrgwname -ResourceGroupName $resourcegroup -Location $region -IpConfigurations $ipconf -GatewayType Expressroute -GatewaySku Standard
+$command | ConvertTo-Json
+
+
+$test = Get-AzVirtualNetworkGateway -Name $exrgwname -ResourceGroupName $resourcegroup -ErrorAction Ignore
+
+If($test.count -eq 0){Write-Host -ForegroundColor Red "
+ExpressRoute Gateway $exrgwname Failed to Create"
+Exit}
+If($test.count -eq 1){Write-Host -ForegroundColor Green "
+ExpressRoute Gateway $exrgwname Created"}
+}

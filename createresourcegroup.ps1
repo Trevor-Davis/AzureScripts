@@ -1,24 +1,50 @@
-$filename = "azurelogin-function.ps1"
-Invoke-WebRequest -uri "https://raw.githubusercontent.com/Trevor-Davis/AzureScripts/main/Functions/$filename" `
--OutFile $env:TEMP\AVSDeploy\$filename
-Clear-Host
-. $env:TEMP\AVSDeploy\$filename
+#Variables
+$rgname = $global:avsrgname
+$regionfordeployment = $global:regionfordeployment
+$sub = $global:avssub
+$tenant = ""
 
-if ($global:skipmanualinputs -ne "Yes") {
-    Add-Type -AssemblyName Microsoft.VisualBasic
-    $sub = [Microsoft.VisualBasic.Interaction]::InputBox('Subscription:', ' ')
-    
-    Add-Type -AssemblyName Microsoft.VisualBasic
-    $region = [Microsoft.VisualBasic.Interaction]::InputBox('Region to Create Resource Group:', ' ')
-    
-    Add-Type -AssemblyName Microsoft.VisualBasic
-    $resourcegroupname = [Microsoft.VisualBasic.Interaction]::InputBox('Resource Group To Create:', ' ')
+
+#DO NOT MODIFY BELOW THIS LINE #################################################
+
+#Azure Login
+
+$filename = "Function-azurelogin.ps1"
+write-host "Downloading" $filename
+Invoke-WebRequest -uri "https://raw.githubusercontent.com/Trevor-Davis/AzureScripts/main/Functions/$filename" -OutFile $env:TEMP\$folder\$filename
+. $env:TEMP\$filename
+
+if ($tenanttoconnect -ne "") {
+  azurelogin -subtoconnect $sub -tenanttoconnect $tenant
+}
+else {
+  azurelogin -subtoconnect $sub 
 }
 
+#Execution
+$test = Get-AzResourceGroup -Name $rgname -ErrorAction:Ignore
 
-New-AzResourceGroup -Name $resourcegroupname -Location $region
+if ($test.count -eq 1) {
+write-Host -ForegroundColor Blue "
+Resource Group $rgname Already Exists"   
+}
+  
+if ($test.count -eq 0) {
+write-host -foregroundcolor Yellow "
+Creating Resource Group $rgname"
+$command = New-AzResourceGroup -Name $rgname -Location $regionfordeployment
+$command | ConvertTo-Json
 
-azurelogin -subtoconnect $sub
+$test = Get-AzResourceGroup -Name $rgname -ErrorAction:Ignore
+If($test.count -eq 0){
+Write-Host -ForegroundColor Red "
+Resource Group $rgname Failed to Create"
+Exit
+}
+else {
+  write-Host -ForegroundColor Green "
+Resource Group $rgname Successfully Created"
+  }
+}
 
-#References
-#https://www.delftstack.com/howto/powershell/powershell-input-box/
+Remove-Item $env:TEMP\$filename
