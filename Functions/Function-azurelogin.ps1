@@ -2,7 +2,8 @@
 function azurelogin {
 
   param (
-      $subtoconnect
+      $subtoconnect,
+      $tenanttoconnect
   )
   $sublist = @()
   $sublist = Get-AzSubscription -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
@@ -10,5 +11,5 @@ function azurelogin {
   $getazcontext = Get-AzContext
   If ($checksub.Count -eq 1 -and $getazcontext.Subscription.Id -eq $subtoconnect) {" "}
   if ($checksub.Count -eq 1 -and $getazcontext.Subscription.Id -ne $subtoconnect) {Set-AzContext -SubscriptionId $subtoconnect -WarningAction SilentlyContinue}
-  if ($checksub.Count -eq 0) {Connect-AzAccount -Subscription $subtoconnect -WarningAction SilentlyContinue}
+  if ($checksub.Count -eq 0) {Connect-AzAccount -Subscription $subtoconnect -TenantId $tenanttoconnect -WarningAction SilentlyContinue}
   }
