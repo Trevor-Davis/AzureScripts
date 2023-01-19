@@ -6,6 +6,7 @@ $region = $global:exrgwregion
 $exrgwname = $global:exrgwname
 $sub = $global:avssub
 $tenant = ""
+$gatewaysubnetaddressspace = $global:gatewaysubnetaddressspace
 
 #DO NOT MODIFY BELOW THIS LINE #################################################
 
@@ -29,18 +30,31 @@ else {
 $vnetforgateway = Get-AzVirtualNetwork -Name $vnet -ResourceGroupName $resourcegroup -ErrorAction:Ignore
 $vnetforgateway | ConvertTo-Json
 
+#Create GatewaySubnet
+
+$test = Get-AzVirtualNetworkSubnetConfig -Name "GatewaySubnet" -VirtualNetwork $vnetforgateway -ErrorAction:Ignore
+if ($test.count -eq 0) {
+Add-AzVirtualNetworkSubnetConfig -Name "GatewaySubnet" -VirtualNetwork $vnetforgateway -AddressPrefix $gatewaysubnetaddressspace
+$vnetforgateway | Set-AzVirtualNetwork
+}
+
 $subnet = Get-AzVirtualNetworkSubnetConfig -Name "GatewaySubnet" -VirtualNetwork $vnetforgateway -ErrorAction:Ignore
 $subnet | ConvertTo-Json
 
 #create public IP
+
+$test = Get-AzPublicIpAddress -Name $exrgwipname -ResourceGroupName $resourcegroup -ErrorAction:Ignore
+if ($test.count -eq 0) {
+
 $pip = New-AzPublicIpAddress -Name $exrgwipname -ResourceGroupName $resourcegroup -Location $region -AllocationMethod Dynamic -ErrorAction:Ignore
 $pip | ConvertTo-Json
 
 $ipconf = New-AzVirtualNetworkGatewayIpConfig -Name $exrgwipname -Subnet $subnet -PublicIpAddress $pip -ErrorAction:Ignore
 $ipconf | ConvertTo-Json
+}
 
 #test to see if ExR GW exists
-$test = Get-AzVirtualNetworkGateway -ResourceGroupName $resourcegroup -Name $exrgwname
+$test = Get-AzVirtualNetworkGateway -ResourceGroupName $resourcegroup -Name $exrgwname -ErrorAction:Ignore
 
 if ($test.count -eq 1){Write-Host -ForegroundColor Blue "
 ExpressRoute Gateway $exrgwname Already Exists"
