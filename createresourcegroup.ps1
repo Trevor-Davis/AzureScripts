@@ -5,6 +5,7 @@ $sub = $global:avssub
 $tenant = ""
 
 
+
 #DO NOT MODIFY BELOW THIS LINE #################################################
 
 #Azure Login
@@ -48,3 +49,6 @@ Resource Group $rgname Successfully Created"
 }
 
 Remove-Item $env:TEMP\$filename
+
+
+
