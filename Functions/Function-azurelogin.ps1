@@ -13,11 +13,10 @@ function azurelogin {
   if ($checksub.Count -eq 1 -and $getazcontext.Subscription.Id -ne $subtoconnect) {Set-AzContext -SubscriptionId $subtoconnect -WarningAction SilentlyContinue}
   if ($checksub.Count -eq 0) {
     
-    If ($tenanttoconnect -ne ""){
+    If ($tenanttoconnect.Count -ne 0){
       Connect-AzAccount -Subscription $subtoconnect -TenantId $tenanttoconnect -WarningAction SilentlyContinue}
       else {
         Connect-AzAccount -Subscription $subtoconnect -WarningAction SilentlyContinue}
-  
   
       }
     }
