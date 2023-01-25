@@ -5,6 +5,7 @@ function azurelogin {
       $subtoconnect,
       $tenanttoconnect
   )
+  $ErrorActionPreference = 'SilentlyContinue'
   $sublist = @()
   $sublist = Get-AzSubscription -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
   $checksub = $sublist -match $subtoconnect
