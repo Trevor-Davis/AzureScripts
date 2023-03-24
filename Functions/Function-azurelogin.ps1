@@ -15,9 +15,9 @@ function azurelogin {
   if ($checksub.Count -eq 0) {
     
     If ($tenanttoconnect.Count -ne 0){
-      Connect-AzAccount -Subscription $subtoconnect -TenantId $tenanttoconnect -WarningAction SilentlyContinue}
+      Connect-AzAccount -Subscription $subtoconnect -TenantId $tenanttoconnect -UseDeviceAuthentication}
       else {
-        Connect-AzAccount -Subscription $subtoconnect -WarningAction SilentlyContinue}
+        Connect-AzAccount -Subscription $subtoconnect -UseDeviceAuthentication}
   
       }
     }
