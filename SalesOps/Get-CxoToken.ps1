@@ -86,19 +86,44 @@ function Send-Cdp {
     $Socket.SendAsync($buf, 'Text', $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
 }
 
+# Poll for a CDP frame without ever cancelling ReceiveAsync. Cancelling a pending
+# receive puts the WebSocket into the 'Aborted' state permanently, so instead we
+# keep one outstanding receive task and simply wait on it with a timeout.
+$script:PendingReceive = $null
+$script:RecvBuffer = [byte[]]::new(131072)
+
 function Receive-Cdp {
     param($Socket, [int]$WaitMs = 500)
-    $buffer = [byte[]]::new(65536)
-    $seg = [ArraySegment[byte]]::new($buffer)
+
+    if ($Socket.State -ne 'Open') { return $null }
+
     $sb = [Text.StringBuilder]::new()
-    $cts = [Threading.CancellationTokenSource]::new($WaitMs)
-    try {
-        do {
-            $res = $Socket.ReceiveAsync($seg, $cts.Token).GetAwaiter().GetResult()
-            [void]$sb.Append([Text.Encoding]::UTF8.GetString($buffer, 0, $res.Count))
-        } while (-not $res.EndOfMessage)
-        return $sb.ToString()
-    } catch { return $null } finally { $cts.Dispose() }
+    $deadline = (Get-Date).AddMilliseconds($WaitMs)
+
+    while ($true) {
+        if (-not $script:PendingReceive) {
+            $seg = [ArraySegment[byte]]::new($script:RecvBuffer)
+            try {
+                $script:PendingReceive = $Socket.ReceiveAsync($seg, [Threading.CancellationToken]::None)
+            } catch { return $null }
+        }
+
+        $remaining = [int]([math]::Max(1, ($deadline - (Get-Date)).TotalMilliseconds))
+        if (-not $script:PendingReceive.Wait($remaining)) {
+            # still in flight - leave it pending for the next call, socket stays healthy
+            return $(if ($sb.Length) { $sb.ToString() } else { $null })
+        }
+
+        try { $res = $script:PendingReceive.GetAwaiter().GetResult() }
+        catch { $script:PendingReceive = $null; return $null }
+        finally { $script:PendingReceive = $null }
+
+        if ($res.MessageType -eq 'Close') { return $null }
+        [void]$sb.Append([Text.Encoding]::UTF8.GetString($script:RecvBuffer, 0, $res.Count))
+
+        if ($res.EndOfMessage) { return $sb.ToString() }
+        if ((Get-Date) -ge $deadline) { return $sb.ToString() }
+    }
 }
 
 # ------------------------------------------------------------------ launch Edge
