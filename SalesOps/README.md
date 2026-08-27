@@ -19,7 +19,7 @@ pull that was 807 SKUs and 1,350 subscriptions instead of the ~20 rows on screen
 
 ```powershell
 # One command: captures its own token, pulls everything, builds the workbook
-.\Get-CxoConsumption.ps1 -Tpid 642489 -AutoToken -Hierarchy -OutDir .\out
+.\Get-CxoConsumption.ps1 -Tpid 642489 -OutDir .\out
 ```
 
 ```
@@ -53,18 +53,20 @@ Roughly one minute end to end on PowerShell 7.
 ## The scripts
 
 ### `Get-CxoConsumption.ps1`
-The main entry point. Pulls consumption and writes the CSVs.
+The main entry point. A bare `-Tpid <id>` call does everything: captures a token,
+resolves the customer name, pulls every dimension, builds the hierarchy, and writes
+the Excel workbook. The `-No*` switches opt out.
 
 | Parameter | Default | Notes |
 |---|---|---|
 | `-Tpid` | *required* | MSX Top Parent ID, e.g. `642489`. |
-| `-AutoToken` | | Capture tokens automatically. **Recommended.** |
-| `-Token` | | Bearer string, if you'd rather paste one. |
-| `-Hierarchy` | | Adds the Service → Product → SKU rollup **and the Excel workbook**. |
-| `-NoPivot` | | Keep the hierarchy CSV but skip the workbook. |
+| `-OutDir` | script folder | Absolute, relative, `~`, or `%VAR%`. Created if missing. |
+| `-NoHierarchy` | | Skip the Service → Product → SKU rollup **and** the workbook. Fast CSV-only pull. |
+| `-NoPivot` | | Keep the hierarchy CSV but skip the Excel workbook. |
+| `-NoAutoToken` | | Don't auto-capture a token; fail if none is supplied. |
+| `-Token` | | Bearer string, if you'd rather supply one. Takes precedence. |
 | `-Months` | `6` | Look-back window. Or use `-StartDate` / `-EndDate`. |
 | `-Aspects` | `consumptionunits` | Also `compute` (VM cores) and `storage`. |
-| `-OutDir` | script folder | Absolute, relative, `~`, or `%VAR%`. Created if missing. |
 | `-NoTpidSubfolder` | | Write straight into `-OutDir`. |
 | `-CustomerName` | *looked up* | Override the auto-resolved name. |
 | `-Throttle` | `8` | Parallel requests (PS7 only). `1` forces sequential. |
@@ -77,11 +79,12 @@ returned in memory — never written to disk or logged.
 Uses a dedicated Edge profile at `%LOCALAPPDATA%\CxoConsumption\edge-profile`, so
 it never touches your normal browser. Sign in once; later runs are silent.
 
-`Get-CxoConsumption.ps1 -AutoToken` calls this for you, so you rarely run it directly.
+`Get-CxoConsumption.ps1` calls this automatically when no token is supplied, so you
+rarely run it directly.
 
 ### `New-CxoPivot.py`
-Turns a hierarchy CSV into the Excel workbook. Invoked automatically by
-`-Hierarchy`; run it standalone to rebuild a workbook from existing CSVs.
+Turns a hierarchy CSV into the Excel workbook. Invoked automatically by the main
+script; run it standalone to rebuild a workbook from existing CSVs.
 
 ```bash
 python New-CxoPivot.py <hierarchy.csv> [-o out.xlsx] [--top 50] [--title "..."]
@@ -102,7 +105,7 @@ out/642489_MORGAN_STANLEY/
 ├── 642489_MORGAN_STANLEY_consumptionunits_L5_SKU.csv            #   807
 ├── 642489_MORGAN_STANLEY_consumptionunits_SubscriptionName.csv  # 1,244
 ├── 642489_MORGAN_STANLEY_consumptionunits_SubscriptionGuid.csv  # 1,350
-├── 642489_MORGAN_STANLEY_product_sku_hierarchy.csv              # 1,086 (with -Hierarchy)
+├── 642489_MORGAN_STANLEY_product_sku_hierarchy.csv              # 1,086
 └── 642489_MORGAN_STANLEY_Pivot.xlsx
 ```
 
@@ -168,7 +171,7 @@ Customer names come from the Customer domain with `Filter: "TPID eq '<tpid>'"`.
 The APIs need a delegated token for
 `api://31390d6a-f361-4eb0-922a-ca3a563f3ad1/user_impersonation`.
 
-**`-AutoToken` is the path that works.** Two alternatives are dead ends worth
+**Automatic token capture is the default.** Two alternatives are dead ends worth
 documenting so nobody re-litigates them:
 
 - **Azure CLI** — `AADSTS65001`, the CLI's app ID isn't consented to this API.
@@ -177,16 +180,18 @@ documenting so nobody re-litigates them:
   can't present device identity, so Conditional Access rejects it. The parameter
   still exists for tenants without that policy.
 
-Manual fallback if you prefer:
+Manual override if you prefer:
 
 ```powershell
 # F12 > Network > any consumption-trafficmanager request > Request Headers > authorization
 $env:CXO_TOKEN = 'Bearer eyJ0...'
 $env:CXO_CUSTOMER_TOKEN = 'Bearer eyJ0...'   # optional, for the name lookup
-.\Get-CxoConsumption.ps1 -Tpid 642489 -Hierarchy
+.\Get-CxoConsumption.ps1 -Tpid 642489
 ```
 
-Tokens last about an hour.
+Tokens last about an hour. **`$env:CXO_TOKEN` takes precedence over auto-capture**,
+so a stale one from an earlier session will cause 401s — clear it with
+`Remove-Item Env:\CXO_TOKEN`.
 
 ---
 

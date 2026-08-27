@@ -13,44 +13,50 @@
            ?startDate=..&endDate=..&unit=month&view=pivotedchart&aggregation=Sum
 
     The "Select" array in the body chooses the grouping dimension. An OData-style
-    Filter lets you scope one dimension by another, which is how -Hierarchy rolls
+    Filter lets you scope one dimension by another, which is how the hierarchy rolls
     SKUs (L5) up under their parent product (L4).
 
-    AUTH - the API needs a delegated token for
-    api://31390d6a-f361-4eb0-922a-ca3a563f3ad1/user_impersonation:
+    DEFAULTS - a bare "-Tpid <id>" call does the full job: it captures its own token,
+    resolves the customer name, pulls every dimension, builds the Service -> Product
+    -> SKU hierarchy, and writes the Excel pivot workbook. Opt out with -NoHierarchy,
+    -NoPivot, or -NoAutoToken.
 
-      1. -AutoToken   RECOMMENDED. Runs Get-CxoToken.ps1, which drives a scripted Edge
-                      session and lifts the bearer token off the live requests. Sign in
-                      once; the dedicated Edge profile keeps you signed in afterwards.
-      2. -Token       Paste from F12 > Network > any consumption-trafficmanager request
+    AUTH - the API needs a delegated token for
+    api://31390d6a-f361-4eb0-922a-ca3a563f3ad1/user_impersonation. Sources, in order:
+
+      1. -Token       Paste from F12 > Network > any consumption-trafficmanager request
                       > Request Headers > authorization.
-      3. $env:CXO_TOKEN            same value as -Token
+      2. $env:CXO_TOKEN            same value as -Token
          $env:CXO_CUSTOMER_TOKEN   optional; from a customerdom-trafficmanager request,
-                                   used only to resolve the customer name for folder naming.
+                                   used only to resolve the customer name.
+      3. Automatic capture (DEFAULT). Runs Get-CxoToken.ps1, which drives a scripted
+         Edge session and lifts the bearer token off the live requests. Sign in once;
+         the dedicated Edge profile keeps you signed in afterwards. -NoAutoToken
+         suppresses this and fails instead.
 
       -DeviceLogin still exists but is BLOCKED on tenants whose Conditional Access
       requires a managed device: the device-code flow cannot present device identity
       and fails with "your admin requires the device requesting access to be managed."
-      Prefer -AutoToken.
 
-    Tokens last about an hour. Nothing is written to disk except the optional
-    encrypted refresh token used by -DeviceLogin.
+    Tokens last about an hour. If $env:CXO_TOKEN is set from an earlier session it
+    takes precedence and may be stale - clear it with  Remove-Item Env:\CXO_TOKEN.
+    Nothing is written to disk except the optional encrypted refresh token used by
+    -DeviceLogin.
 
 .EXAMPLE
-    # Simplest full pull - captures its own token, resolves the customer name
-    .\Get-CxoConsumption.ps1 -Tpid 642489 -AutoToken -Hierarchy
+    # Everything: token capture, CSVs, hierarchy, and the Excel workbook
+    .\Get-CxoConsumption.ps1 -Tpid 642489 -OutDir 'C:\temp'
 
 .EXAMPLE
     .\Get-CxoConsumption.ps1 -Tpid 642489 -Token $env:CXO_TOKEN -Months 12 -OutDir .\out
 
 .EXAMPLE
-    # -Hierarchy also builds the Excel pivot workbook automatically.
-    # On PowerShell 7 the ~450 calls run 8-way parallel (about 40s); 5.1 runs sequentially.
-    .\Get-CxoConsumption.ps1 -Tpid 642489 -AutoToken -Hierarchy -Throttle 12
+    # Fast CSV-only pull - skips the few hundred hierarchy calls and the workbook
+    .\Get-CxoConsumption.ps1 -Tpid 642489 -NoHierarchy
 
 .EXAMPLE
-    # Skip the workbook and keep just the CSVs
-    .\Get-CxoConsumption.ps1 -Tpid 642489 -AutoToken -Hierarchy -NoPivot
+    # Keep the hierarchy CSV but skip the workbook; raise parallelism (PowerShell 7)
+    .\Get-CxoConsumption.ps1 -Tpid 642489 -NoPivot -Throttle 12
 
 .EXAMPLE
     # Send output anywhere; the folder is created if it does not exist.
@@ -74,10 +80,10 @@ param(
 
     [switch]$DeviceLogin,
 
-    # Launch a scripted Edge session (Get-CxoToken.ps1) to capture the API tokens
-    # from your signed-in CX Observe session. Use this when you have no token to hand -
-    # device-code sign-in is blocked by Conditional Access on managed-device tenants.
-    [switch]$AutoToken,
+    # Token capture from a scripted Edge session (Get-CxoToken.ps1) is the DEFAULT.
+    # It kicks in automatically when no -Token / $env:CXO_TOKEN / cached credential
+    # is available. Use -NoAutoToken to suppress it and fail instead.
+    [switch]$NoAutoToken,
 
     [int]$Months = 6,
 
@@ -88,12 +94,12 @@ param(
     [ValidateSet('consumptionunits', 'compute', 'storage')]
     [string[]]$Aspects = @('consumptionunits'),
 
-    # Also emit a Service -> Product -> SKU rollup by filtering L5 per L4 product.
-    # Costs ~1 request per service and per product (a few hundred), so it takes a minute.
-    # Building the hierarchy also produces the Excel pivot workbook automatically.
-    [switch]$Hierarchy,
+    # The Service -> Product -> SKU rollup (and the Excel workbook built from it) is
+    # produced by DEFAULT. It costs ~1 request per service and per product - a few
+    # hundred calls, roughly 40s on PowerShell 7. Use -NoHierarchy for a fast CSV-only pull.
+    [switch]$NoHierarchy,
 
-    # Skip the Excel pivot workbook that -Hierarchy normally builds via New-CxoPivot.py.
+    # Skip the Excel pivot workbook that the hierarchy normally builds via New-CxoPivot.py.
     [switch]$NoPivot,
 
     # Customer name used in the <TPID>_<CustomerName> folder and file names.
@@ -110,7 +116,7 @@ param(
     # don't collide. Use -NoTpidSubfolder to write straight into -OutDir.
     [switch]$NoTpidSubfolder,
 
-    # Parallel request fan-out for -Hierarchy. Requires PowerShell 7+; on 5.1 the
+    # Parallel request fan-out for the hierarchy pull. Requires PowerShell 7+; on 5.1 the
     # script automatically falls back to sequential calls. Set to 1 to force sequential.
     [ValidateRange(1, 32)]
     [int]$Throttle = 8,
@@ -266,22 +272,25 @@ function Invoke-TokenCapture {
 }
 
 function Resolve-AccessToken {
-    if ($Token)           { return ($Token           -replace '^\s*Bearer\s+', '') }
-    if ($env:CXO_TOKEN)   { return ($env:CXO_TOKEN   -replace '^\s*Bearer\s+', '') }
-    if ($AutoToken) {
-        $t = (Invoke-TokenCapture).ConsumptionToken
-        if ($t) { return ($t -replace '^\s*Bearer\s+', '') }
-        throw 'Token capture did not return a Consumption token.'
-    }
+    # Explicit -Token always wins. Otherwise fall back through the ambient sources,
+    # then capture from a scripted Edge session (the default when nothing else works).
+    if ($Token) { return ($Token -replace '^\s*Bearer\s+', '') }
+    if ($env:CXO_TOKEN) { return ($env:CXO_TOKEN -replace '^\s*Bearer\s+', '') }
     $t = Get-TokenFromRefresh
     if ($t) { return $t }
     if ($DeviceLogin) { return Get-TokenByDeviceCode }
+
+    if (-not $NoAutoToken) {
+        $t = (Invoke-TokenCapture).ConsumptionToken
+        if ($t) { return ($t -replace '^\s*Bearer\s+', '') }
+        throw 'Token capture did not return a Consumption token. Re-run Get-CxoToken.ps1 -Visible and finish signing in.'
+    }
+
     throw @'
-No token available. Pick one:
-  -AutoToken                       capture from a scripted Edge session (recommended)
+No token available (-NoAutoToken was specified). Pick one:
   -Token '<bearer ...>'            paste from F12 > Network > consumption-trafficmanager
   $env:CXO_TOKEN = '<bearer ...>'  same, via environment variable
-(-DeviceLogin is blocked by Conditional Access on managed-device tenants.)
+Or drop -NoAutoToken to capture one automatically from a scripted Edge session.
 '@
 }
 
@@ -301,11 +310,13 @@ function ConvertTo-SafeName {
 function Get-CxoCustomerName {
     param([string]$Tpid)
 
-    # Needs a customer-domain token; from -AutoToken capture, env var, or cached refresh.
+    # Needs a customer-domain token; reuse the captured pair when available.
     $custToken = $null
     if ($env:CXO_CUSTOMER_TOKEN) {
         $custToken = $env:CXO_CUSTOMER_TOKEN -replace '^\s*Bearer\s+', ''
-    } elseif ($AutoToken) {
+    } elseif ($script:CapturedTokens) {
+        $custToken = $script:CapturedTokens.CustomerToken -replace '^\s*Bearer\s+', ''
+    } elseif (-not $NoAutoToken) {
         $custToken = (Invoke-TokenCapture).CustomerToken -replace '^\s*Bearer\s+', ''
     } else {
         $custToken = Get-TokenFromRefresh -Scope $CustScope
@@ -524,7 +535,7 @@ $safeCustomer = ConvertTo-SafeName $CustomerName
 $Stem = if ($safeCustomer) { "{0}_{1}" -f $Tpid, $safeCustomer } else { $Tpid }
 
 if (-not $safeCustomer) {
-    Write-Warning "Could not resolve the customer name for TPID $Tpid (needs -DeviceLogin or -CustomerName). Falling back to '$Tpid'."
+    Write-Warning "Could not resolve the customer name for TPID $Tpid - pass -CustomerName to set it explicitly. Falling back to '$Tpid'."
 }
 
 $nameForDisplay = if ($CustomerName) { $CustomerName } else { '(unknown)' }
@@ -545,7 +556,26 @@ foreach ($aspect in $Aspects) {
             $rows = Invoke-CxoAspect -AccessToken $accessToken -Aspect $aspect -Dimension $dims[$name] `
                                      -Start $startIso -End $endIso -TopN $Top
         } catch {
+            $status = $null
+            if ($_.Exception.Response) {
+                try { $status = [int]$_.Exception.Response.StatusCode } catch { }
+            }
             Write-Host " FAILED: $($_.Exception.Message)" -ForegroundColor Red
+
+            # An auth failure will hit every remaining call too - stop rather than
+            # grinding through and leaving behind empty CSVs that look like real output.
+            if ($status -in 401, 403) {
+                throw @"
+Authentication failed ($status) calling the CX Observe API.
+The token is missing, expired (they last about an hour), or lacks access to TPID $Tpid.
+
+If `$env:CXO_TOKEN is set from an earlier session it may be stale - clear it and
+re-run so a fresh token is captured automatically:
+
+    Remove-Item Env:\CXO_TOKEN
+    .\Get-CxoConsumption.ps1 -Tpid $Tpid -OutDir '<folder>'
+"@
+            }
             continue
         }
 
@@ -569,9 +599,13 @@ foreach ($aspect in $Aspects) {
 }
 
 $combined = Join-Path $OutDir ("{0}_all.csv" -f $Stem)
+if ($all.Count -eq 0) {
+    Write-Warning 'No data was returned - nothing written. Check the errors above.'
+    return
+}
 $all | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $combined
 
-if ($Hierarchy) {
+if (-not $NoHierarchy) {
     $tree = Get-CxoHierarchy -AccessToken $accessToken -Start $startIso -End $endIso
     $treePath = Join-Path $OutDir ("{0}_product_sku_hierarchy.csv" -f $Stem)
     $tree | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $treePath
