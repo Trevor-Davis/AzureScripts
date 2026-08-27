@@ -35,7 +35,8 @@ Building Excel pivot workbook ...
 Workbook : ...\642489_MORGAN_STANLEY_Pivot.xlsx
 ```
 
-Roughly one minute end to end on PowerShell 7.
+Roughly one minute end to end on PowerShell 7. Add `-NoHierarchy` for a ~10s
+CSV-only pull.
 
 ---
 
@@ -87,7 +88,7 @@ Turns a hierarchy CSV into the Excel workbook. Invoked automatically by the main
 script; run it standalone to rebuild a workbook from existing CSVs.
 
 ```bash
-python New-CxoPivot.py <hierarchy.csv> [-o out.xlsx] [--top 50] [--title "..."]
+python New-CxoPivot.py <hierarchy.csv> [-o out.xlsx] [--top 50] [--months 6] [--title "..."]
 ```
 
 ---
@@ -111,14 +112,22 @@ out/642489_MORGAN_STANLEY/
 
 **The workbook** has three sheets:
 
-- **Pivot** — collapsible Service → Product → SKU outline with ACU, % of parent,
-  % of total, and data bars. Opens at Service/Product level; use the `1 2 3`
-  outline buttons to drill in.
+- **Pivot** — collapsible Service → Product → SKU outline with ACU, ACU/mo, % of
+  parent, % of total, and data bars. Opens at Service/Product level; use the
+  `1 2 3` outline buttons to drill in.
 - **Data** — flat rows as a named table (`ConsumptionData`) for your own PivotTables.
 - **Top SKUs** — top 50 ranked, with parent product and service.
 
+The ACU column is labelled with the period it covers (e.g. `ACU (6 mo)`), and
+`ACU / mo` next to it is the monthly average. The period is inferred from the
+sibling `_all.csv`; pass `--months` to override when running the pivot standalone.
+
 `% of Parent` is the column that earns its keep: it shows E64ads v5 is 67% of
 Eadsv5 Series spend, and AI Credit is 81% of GitHub Copilot.
+
+> The hierarchy CSV also carries a `ProductACU` column — the parent product's total,
+> repeated on every SKU row as a denominator. **Never sum it**; it double-counts.
+> Sum `SKU_ACU` instead. It's deliberately left out of the workbook.
 
 ---
 
@@ -219,10 +228,10 @@ these scripts use it.
 
 | Symptom | Fix |
 |---|---|
-| `No token available` | Add `-AutoToken`. |
-| Token capture times out | Re-run with `-Visible` and finish signing in. |
+| `401` on every dimension | A stale `$env:CXO_TOKEN` is overriding auto-capture. `Remove-Item Env:\CXO_TOKEN` and re-run. |
 | `401` mid-run | Token expired (~1h). Re-run. |
-| Customer name not resolved | Pass `-CustomerName 'NAME'`, or supply `$env:CXO_CUSTOMER_TOKEN`. |
+| Token capture times out | Run `.\Get-CxoToken.ps1 -Visible` and finish signing in. |
+| Customer name not resolved | Pass `-CustomerName 'NAME'`. |
 | No workbook produced | Python or `openpyxl` missing — the pull still succeeds and warns. |
-| Hierarchy is slow | You're on PS 5.1. Install PS7, or raise `-Throttle`. |
-| `AADSTS65001` | Expected from Azure CLI. Use `-AutoToken`. |
+| Run is slow | You're on PS 5.1 (sequential). Install PS7, raise `-Throttle`, or use `-NoHierarchy`. |
+| `AADSTS65001` | Expected from Azure CLI; it isn't consented to this API. |

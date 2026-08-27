@@ -222,7 +222,7 @@ function Get-TokenByDeviceCode {
 }
 
 function New-CxoPivotWorkbook {
-    param([string]$HierarchyCsv, [string]$Title)
+    param([string]$HierarchyCsv, [string]$Title, [double]$PeriodMonths)
 
     $root = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
     $builder = Join-Path $root 'New-CxoPivot.py'
@@ -242,7 +242,9 @@ function New-CxoPivotWorkbook {
     }
 
     Write-Host 'Building Excel pivot workbook ...'
-    $out = & $python $builder $HierarchyCsv --title $Title 2>&1
+    $pyArgs = @($builder, $HierarchyCsv, '--title', $Title)
+    if ($PeriodMonths -gt 0) { $pyArgs += @('--months', $PeriodMonths) }
+    $out = & $python @pyArgs 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Warning ("Pivot build failed: {0}" -f ($out -join ' '))
         return $null
@@ -615,7 +617,14 @@ if (-not $NoHierarchy) {
         $label = if ($CustomerName) { "$CustomerName (TPID $Tpid)" } else { "TPID $Tpid" }
         $title = "$label - Azure Consumption by Service > Product > SKU " +
                  ("({0} to {1})" -f $StartDate.ToString('MMM yyyy'), $EndDate.ToString('MMM yyyy'))
-        $xlsx = New-CxoPivotWorkbook -HierarchyCsv $treePath -Title $title
+
+        # Whole months in the window - drives the "ACU (N mo)" header and ACU / mo column.
+        $periodMonths = if ($PSBoundParameters.ContainsKey('StartDate') -or
+                            $PSBoundParameters.ContainsKey('EndDate')) {
+            [math]::Max(1, [math]::Round((($EndDate - $StartDate).TotalDays / 30.4375), 2))
+        } else { $Months }
+
+        $xlsx = New-CxoPivotWorkbook -HierarchyCsv $treePath -Title $title -PeriodMonths $periodMonths
         if ($xlsx) { Write-Host ("Workbook : {0}" -f $xlsx) -ForegroundColor Cyan }
     }
 }
