@@ -16,6 +16,9 @@ output/
 *.xlsm
 *.json
 
+# ...but keep the scripts and any tooling config
+!New-CxoPivot.py
+
 # Captured bearer tokens / credentials
 *.tok
 *.token

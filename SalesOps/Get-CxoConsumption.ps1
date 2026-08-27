@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Pulls Azure SKU / service / subscription consumption for a TPID from the CX Observe
     (cxp.azure.com) Consumption domain API.
@@ -12,25 +12,46 @@
            /api/insights/ch:customer::tpid:<TPID>/aspects/<aspect>
            ?startDate=..&endDate=..&unit=month&view=pivotedchart&aggregation=Sum
 
-    The "Select" array in the body chooses the grouping dimension.
+    The "Select" array in the body chooses the grouping dimension. An OData-style
+    Filter lets you scope one dimension by another, which is how -Hierarchy rolls
+    SKUs (L5) up under their parent product (L4).
 
-    AUTH: the API requires a delegated token for
-    api://31390d6a-f361-4eb0-922a-ca3a563f3ad1/user_impersonation.
-    Azure CLI is NOT pre-authorized for this API, so use one of:
-      1. -DeviceLogin        (device-code sign-in; token cached under %LOCALAPPDATA%\CxoConsumption)
-      2. -Token "Bearer ..." (paste from browser F12 > Network > any consumption-trafficmanager
-                              request > Request Headers > authorization)
-      3. $env:CXO_TOKEN
+    AUTH - the API needs a delegated token for
+    api://31390d6a-f361-4eb0-922a-ca3a563f3ad1/user_impersonation:
+
+      1. -AutoToken   RECOMMENDED. Runs Get-CxoToken.ps1, which drives a scripted Edge
+                      session and lifts the bearer token off the live requests. Sign in
+                      once; the dedicated Edge profile keeps you signed in afterwards.
+      2. -Token       Paste from F12 > Network > any consumption-trafficmanager request
+                      > Request Headers > authorization.
+      3. $env:CXO_TOKEN            same value as -Token
+         $env:CXO_CUSTOMER_TOKEN   optional; from a customerdom-trafficmanager request,
+                                   used only to resolve the customer name for folder naming.
+
+      -DeviceLogin still exists but is BLOCKED on tenants whose Conditional Access
+      requires a managed device: the device-code flow cannot present device identity
+      and fails with "your admin requires the device requesting access to be managed."
+      Prefer -AutoToken.
+
+    Tokens last about an hour. Nothing is written to disk except the optional
+    encrypted refresh token used by -DeviceLogin.
 
 .EXAMPLE
-    .\Get-CxoConsumption.ps1 -Tpid 642489 -DeviceLogin
+    # Simplest full pull - captures its own token, resolves the customer name
+    .\Get-CxoConsumption.ps1 -Tpid 642489 -AutoToken -Hierarchy
 
 .EXAMPLE
     .\Get-CxoConsumption.ps1 -Tpid 642489 -Token $env:CXO_TOKEN -Months 12 -OutDir .\out
 
 .EXAMPLE
-    # Adds 642489_product_sku_hierarchy.csv : Service -> Product -> SKU with % of product
-    .\Get-CxoConsumption.ps1 -Tpid 642489 -DeviceLogin -Hierarchy
+    # Adds <stem>_product_sku_hierarchy.csv : Service -> Product -> SKU with % of product.
+    # On PowerShell 7 the ~450 calls run 8-way parallel (about 40s); 5.1 runs sequentially.
+    .\Get-CxoConsumption.ps1 -Tpid 642489 -AutoToken -Hierarchy -Throttle 12
+
+.EXAMPLE
+    # Turn the hierarchy into an Excel pivot workbook
+    .\Get-CxoConsumption.ps1 -Tpid 642489 -AutoToken -Hierarchy -OutDir .\out
+    python .\New-CxoPivot.py .\out\642489_MORGAN_STANLEY\642489_MORGAN_STANLEY_product_sku_hierarchy.csv
 
 .EXAMPLE
     # Send output anywhere; the folder is created if it does not exist.
@@ -53,6 +74,11 @@ param(
     [string]$Token,
 
     [switch]$DeviceLogin,
+
+    # Launch a scripted Edge session (Get-CxoToken.ps1) to capture the API tokens
+    # from your signed-in CX Observe session. Use this when you have no token to hand -
+    # device-code sign-in is blocked by Conditional Access on managed-device tenants.
+    [switch]$AutoToken,
 
     [int]$Months = 6,
 
@@ -186,13 +212,39 @@ function Get-TokenByDeviceCode {
     throw 'Device code sign-in timed out.'
 }
 
+function Invoke-TokenCapture {
+    # Runs Get-CxoToken.ps1 (sibling script) and caches the result for this session.
+    if ($script:CapturedTokens) { return $script:CapturedTokens }
+
+    $root = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+    $grabber = Join-Path $root 'Get-CxoToken.ps1'
+    if (-not (Test-Path $grabber)) {
+        throw "AutoToken needs Get-CxoToken.ps1 next to this script (looked in $root)."
+    }
+
+    Write-Host 'Capturing tokens from your CX Observe session ...' -ForegroundColor DarkGray
+    $script:CapturedTokens = & $grabber -Tpid $Tpid
+    return $script:CapturedTokens
+}
+
 function Resolve-AccessToken {
-    if ($Token) { return ($Token -replace '^\s*Bearer\s+', '') }
-    if ($env:CXO_TOKEN) { return ($env:CXO_TOKEN -replace '^\s*Bearer\s+', '') }
+    if ($Token)           { return ($Token           -replace '^\s*Bearer\s+', '') }
+    if ($env:CXO_TOKEN)   { return ($env:CXO_TOKEN   -replace '^\s*Bearer\s+', '') }
+    if ($AutoToken) {
+        $t = (Invoke-TokenCapture).ConsumptionToken
+        if ($t) { return ($t -replace '^\s*Bearer\s+', '') }
+        throw 'Token capture did not return a Consumption token.'
+    }
     $t = Get-TokenFromRefresh
     if ($t) { return $t }
     if ($DeviceLogin) { return Get-TokenByDeviceCode }
-    throw "No token. Re-run with -DeviceLogin, or pass -Token '<bearer from F12>'."
+    throw @'
+No token available. Pick one:
+  -AutoToken                       capture from a scripted Edge session (recommended)
+  -Token '<bearer ...>'            paste from F12 > Network > consumption-trafficmanager
+  $env:CXO_TOKEN = '<bearer ...>'  same, via environment variable
+(-DeviceLogin is blocked by Conditional Access on managed-device tenants.)
+'@
 }
 
 function ConvertTo-SafeName {
@@ -211,10 +263,12 @@ function ConvertTo-SafeName {
 function Get-CxoCustomerName {
     param([string]$Tpid)
 
-    # Needs a customer-domain token; only obtainable via the cached refresh token.
+    # Needs a customer-domain token; from -AutoToken capture, env var, or cached refresh.
     $custToken = $null
     if ($env:CXO_CUSTOMER_TOKEN) {
         $custToken = $env:CXO_CUSTOMER_TOKEN -replace '^\s*Bearer\s+', ''
+    } elseif ($AutoToken) {
+        $custToken = (Invoke-TokenCapture).CustomerToken -replace '^\s*Bearer\s+', ''
     } else {
         $custToken = Get-TokenFromRefresh -Scope $CustScope
     }
@@ -490,3 +544,4 @@ Write-Host ''
 Write-Host ("Total {0} rows -> {1}" -f $all.Count, $combined) -ForegroundColor Cyan
 $all | Where-Object Dimension -eq 'L5_SKU' | Sort-Object Value -Descending |
     Select-Object -First 15 Name, Value | Format-Table -AutoSize
+
