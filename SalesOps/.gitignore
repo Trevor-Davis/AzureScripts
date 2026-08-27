@@ -1,0 +1,28 @@
+# CX Observe pulls contain Microsoft Confidential \ Microsoft FTE customer data.
+# Never commit the extracted data - only the scripts that produce it.
+
+# Default output folder
+out/
+output/
+
+# TPID-named result folders (e.g. 642489_MORGAN_STANLEY/) written anywhere here
+[0-9][0-9][0-9][0-9][0-9][0-9]_*/
+[0-9][0-9][0-9][0-9][0-9][0-9][0-9]_*/
+
+# Extracted data files, wherever they land
+*.csv
+*.tsv
+*.xlsx
+*.xlsm
+*.json
+
+# Captured bearer tokens / credentials
+*.tok
+*.token
+*.secret
+.env
+
+# Local scratch
+tmp/
+temp/
+*.log

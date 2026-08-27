@@ -81,6 +81,11 @@ param(
     # don't collide. Use -NoTpidSubfolder to write straight into -OutDir.
     [switch]$NoTpidSubfolder,
 
+    # Parallel request fan-out for -Hierarchy. Requires PowerShell 7+; on 5.1 the
+    # script automatically falls back to sequential calls. Set to 1 to force sequential.
+    [ValidateRange(1, 32)]
+    [int]$Throttle = 8,
+
     [int]$Top = 5000
 )
 
@@ -313,8 +318,10 @@ function Get-CxoHierarchy {
     $L2 = 'workload_dimensions_service_level_2'
     $L4 = 'workload_dimensions_service_level_4'
     $L5 = 'workload_dimensions_service_level_5'
-    $esc = { param($v) $v -replace "'", "''" }
 
+    $useParallel = ($PSVersionTable.PSVersion.Major -ge 7) -and ($Throttle -gt 1)
+
+    # Sequential helper (PS 5.1 path, and used for the small ungrouped calls).
     $get = {
         param($dim, $filter)
         try { Invoke-CxoAspect -AccessToken $AccessToken -Aspect 'consumptionunits' -Dimension $dim `
@@ -322,24 +329,73 @@ function Get-CxoHierarchy {
         catch { @() }
     }
 
+    # Fan out one filtered request per parent value. Returns a hashtable keyed by parent label.
+    function Invoke-FanOut {
+        param([string[]]$Parents, [string]$ParentCol, [string]$ChildCol, [string]$Activity)
+
+        $result = @{}
+        if (-not $Parents -or $Parents.Count -eq 0) { return $result }
+
+        if ($useParallel) {
+            $uriFmt = '{0}/api/insights/ch:customer::tpid:{1}/aspects/ch:aspect:consumptionunits?startDate={2}&endDate={3}&unit=month&view=pivotedchart&aggregation=Sum' `
+                      -f $ApiBase, $Tpid, $Start, $End
+            Write-Host ("  {0}: {1} calls, {2} at a time ..." -f $Activity, $Parents.Count, $Throttle)
+
+            $pairs = $Parents | ForEach-Object -ThrottleLimit $Throttle -Parallel {
+                $parent = $_
+                $body = @{
+                    Facets = @(); Filter = "$using:ParentCol eq '$($parent -replace "'","''")'"
+                    IncludeTotalResultCount = $false; OrderBy = @(); QueryType = 'Full'
+                    SearchMode = 'All'; SearchText = ''; Skip = 0; Top = $using:Top
+                    SearchFields = @(); Select = @($using:ChildCol)
+                } | ConvertTo-Json -Compress
+
+                $rows = @()
+                for ($attempt = 1; $attempt -le 3; $attempt++) {
+                    try {
+                        $rows = Invoke-RestMethod -Uri $using:uriFmt -Method Post -Body $body `
+                                    -ContentType 'application/json' `
+                                    -Headers @{ Authorization = "Bearer $using:AccessToken" }
+                        break
+                    } catch {
+                        if ($attempt -eq 3) { $rows = @() } else { Start-Sleep -Milliseconds (250 * $attempt) }
+                    }
+                }
+                [pscustomobject]@{ Parent = $parent; Rows = $rows }
+            }
+            foreach ($p in $pairs) { $result[$p.Parent] = $p.Rows }
+        }
+        else {
+            $i = 0
+            foreach ($parent in $Parents) {
+                $i++
+                Write-Progress -Activity $Activity -Status $parent `
+                    -PercentComplete (100 * $i / [math]::Max($Parents.Count, 1))
+                $result[$parent] = & $get $ChildCol ("$ParentCol eq '{0}'" -f ($parent -replace "'", "''"))
+            }
+            Write-Progress -Activity $Activity -Completed
+        }
+        return $result
+    }
+
     Write-Host 'Mapping Service (L2) -> Product (L4) ...'
-    $parentOfProduct = @{}
     $services = & $get $L2 ''
-    foreach ($s in $services) {
-        $svc = $s.Label
-        foreach ($p in (& $get $L4 ("$L2 eq '{0}'" -f (& $esc $svc)))) {
+    $l4ByService = Invoke-FanOut -Parents @($services.Label) -ParentCol $L2 -ChildCol $L4 -Activity 'Service -> Product'
+
+    $parentOfProduct = @{}
+    foreach ($svc in $services.Label) {
+        foreach ($p in $l4ByService[$svc]) {
             if (-not $parentOfProduct.ContainsKey($p.Label)) { $parentOfProduct[$p.Label] = $svc }
         }
     }
 
     Write-Host 'Expanding Product (L4) -> SKU (L5) ...'
     $products = & $get $L4 ''
-    $i = 0
+    $l5ByProduct = Invoke-FanOut -Parents @($products.Label) -ParentCol $L4 -ChildCol $L5 -Activity 'Product -> SKU'
+
     foreach ($p in $products) {
-        $i++
-        Write-Progress -Activity 'Product -> SKU' -Status $p.Label -PercentComplete (100 * $i / [math]::Max($products.Count,1))
         $pAcu = if ($p.Values -and $p.Values[0]) { [double]$p.Values[0].Value } else { 0 }
-        $skus = & $get $L5 ("$L4 eq '{0}'" -f (& $esc $p.Label))
+        $skus = $l5ByProduct[$p.Label]
 
         if (-not $skus) {
             [pscustomobject]@{ Tpid=$Tpid; ServiceName_L2=$parentOfProduct[$p.Label]; ProductName_L4=$p.Label
@@ -359,7 +415,6 @@ function Get-CxoHierarchy {
             }
         }
     }
-    Write-Progress -Activity 'Product -> SKU' -Completed
 }
 
 # ---------------------------------------------------------------- main
