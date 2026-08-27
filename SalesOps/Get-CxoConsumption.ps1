@@ -44,14 +44,13 @@
     .\Get-CxoConsumption.ps1 -Tpid 642489 -Token $env:CXO_TOKEN -Months 12 -OutDir .\out
 
 .EXAMPLE
-    # Adds <stem>_product_sku_hierarchy.csv : Service -> Product -> SKU with % of product.
+    # -Hierarchy also builds the Excel pivot workbook automatically.
     # On PowerShell 7 the ~450 calls run 8-way parallel (about 40s); 5.1 runs sequentially.
     .\Get-CxoConsumption.ps1 -Tpid 642489 -AutoToken -Hierarchy -Throttle 12
 
 .EXAMPLE
-    # Turn the hierarchy into an Excel pivot workbook
-    .\Get-CxoConsumption.ps1 -Tpid 642489 -AutoToken -Hierarchy -OutDir .\out
-    python .\New-CxoPivot.py .\out\642489_MORGAN_STANLEY\642489_MORGAN_STANLEY_product_sku_hierarchy.csv
+    # Skip the workbook and keep just the CSVs
+    .\Get-CxoConsumption.ps1 -Tpid 642489 -AutoToken -Hierarchy -NoPivot
 
 .EXAMPLE
     # Send output anywhere; the folder is created if it does not exist.
@@ -91,7 +90,11 @@ param(
 
     # Also emit a Service -> Product -> SKU rollup by filtering L5 per L4 product.
     # Costs ~1 request per service and per product (a few hundred), so it takes a minute.
+    # Building the hierarchy also produces the Excel pivot workbook automatically.
     [switch]$Hierarchy,
+
+    # Skip the Excel pivot workbook that -Hierarchy normally builds via New-CxoPivot.py.
+    [switch]$NoPivot,
 
     # Customer name used in the <TPID>_<CustomerName> folder and file names.
     # Looked up automatically from the CX Observe Customer domain; supply it to
@@ -210,6 +213,41 @@ function Get-TokenByDeviceCode {
         }
     }
     throw 'Device code sign-in timed out.'
+}
+
+function New-CxoPivotWorkbook {
+    param([string]$HierarchyCsv, [string]$Title)
+
+    $root = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+    $builder = Join-Path $root 'New-CxoPivot.py'
+    if (-not (Test-Path $builder)) {
+        Write-Warning "New-CxoPivot.py not found in $root - skipping the Excel workbook."
+        return $null
+    }
+
+    $python = $null
+    foreach ($cand in 'python', 'python3', 'py') {
+        $cmd = Get-Command $cand -ErrorAction SilentlyContinue
+        if ($cmd) { $python = $cmd.Source; break }
+    }
+    if (-not $python) {
+        Write-Warning 'Python was not found on PATH - skipping the Excel workbook.'
+        return $null
+    }
+
+    Write-Host 'Building Excel pivot workbook ...'
+    $out = & $python $builder $HierarchyCsv --title $Title 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning ("Pivot build failed: {0}" -f ($out -join ' '))
+        return $null
+    }
+
+    $xlsx = ($out | Where-Object { $_ -match '^saved\s*:' }) -replace '^saved\s*:\s*', ''
+    if (-not $xlsx) {
+        $xlsx = [System.IO.Path]::ChangeExtension(
+                    ($HierarchyCsv -replace '_product_sku_hierarchy\.csv$', '_Pivot'), 'xlsx')
+    }
+    return $xlsx.Trim()
 }
 
 function Invoke-TokenCapture {
@@ -538,6 +576,14 @@ if ($Hierarchy) {
     $treePath = Join-Path $OutDir ("{0}_product_sku_hierarchy.csv" -f $Stem)
     $tree | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $treePath
     Write-Host ("Hierarchy: {0} rows -> {1}" -f @($tree).Count, $treePath) -ForegroundColor Cyan
+
+    if (-not $NoPivot) {
+        $label = if ($CustomerName) { "$CustomerName (TPID $Tpid)" } else { "TPID $Tpid" }
+        $title = "$label - Azure Consumption by Service > Product > SKU " +
+                 ("({0} to {1})" -f $StartDate.ToString('MMM yyyy'), $EndDate.ToString('MMM yyyy'))
+        $xlsx = New-CxoPivotWorkbook -HierarchyCsv $treePath -Title $title
+        if ($xlsx) { Write-Host ("Workbook : {0}" -f $xlsx) -ForegroundColor Cyan }
+    }
 }
 
 Write-Host ''
