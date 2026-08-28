@@ -36,8 +36,10 @@ PRD_FILL = PatternFill("solid", fgColor="F2F2F2")
 TOT_FILL = PatternFill("solid", fgColor="FFF2CC")
 THIN = Side(style="thin", color="BFBFBF")
 
-# Excel "Accounting" number format, whole units only (no cents).
-ACCT = '_($* #,##0_);_($* (#,##0);_($* "-"_);_(@_)'
+# Accounting format, whole units, no currency symbol - these are Azure Consumption
+# Units (a normalized usage metric), not dollars. Keeps the aligned layout and the
+# "-" for zero that Accounting gives you.
+ACCT = '_(* #,##0_);_(* (#,##0);_(* "-"_);_(@_)'
 
 
 def load(path):
