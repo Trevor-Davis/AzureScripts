@@ -29,3 +29,8 @@ output/
 tmp/
 temp/
 *.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/

@@ -1,8 +1,8 @@
 # CX Observe Consumption Extract
 
 Pull a customer's full Azure SKU / service / subscription consumption out of
-[CX Observe](https://cxp.azure.com) by TPID, as CSV plus a ready-to-read Excel
-pivot workbook.
+[CX Observe](https://cxp.azure.com) by TPID, enrich it with Azure Consumed Revenue
+from the MSA Power BI model, and produce CSVs plus a ready-to-read Excel pivot workbook.
 
 CX Observe's UI renders only the top N rows per tile. These scripts call the same
 REST APIs the portal uses, so you get **everything** — for a recent Morgan Stanley
@@ -18,7 +18,7 @@ pull that was 807 SKUs and 1,350 subscriptions instead of the ~20 rows on screen
 ## Quick start
 
 ```powershell
-# One command: captures its own token, pulls everything, builds the workbook
+# One command: captures its own token, pulls consumption + ACR, builds the workbook
 .\Get-CxoConsumption.ps1 -Tpid 642489 -OutDir .\out
 ```
 
@@ -31,11 +31,13 @@ Output folder: .\out\642489_MORGAN_STANLEY
   Service -> Product: 91 calls, 8 at a time ...
   Product -> SKU: 356 calls, 8 at a time ...
 Hierarchy: 1086 rows
+Pulling ACR from the MSA model ...
+  L4 total: $21,576,104.00 ACR ($ ACR, pre-credit/gross)
 Building Excel pivot workbook ...
 Workbook : ...\642489_MORGAN_STANLEY_Pivot.xlsx
 ```
 
-Roughly one minute end to end on PowerShell 7. Add `-NoHierarchy` for a ~10s
+Roughly 90 seconds end to end on PowerShell 7. Add `-NoHierarchy` for a ~10s
 CSV-only pull.
 
 ---
@@ -45,8 +47,9 @@ CSV-only pull.
 | | |
 |---|---|
 | **PowerShell** | 7.x recommended (`winget install Microsoft.PowerShell`). Works on 5.1, but the hierarchy pull runs sequentially and takes ~3x longer. |
-| **Python** | 3.x with `openpyxl` (`pip install openpyxl`) — only needed for the Excel workbook. |
-| **Edge** | Required for `-AutoToken`. |
+| **Python** | 3.11+ with `openpyxl` (`pip install openpyxl`) — needed for the Excel workbook. |
+| **Edge** | Required for automatic token capture. |
+| **PBI-MCP-Proxy** | Needed for ACR only. See [ACR setup](#acr-azure-consumed-revenue) below. |
 | **Access** | CX Observe entitlement for the TPIDs you query. Corpnet / signed in. |
 
 ---
@@ -64,6 +67,7 @@ the Excel workbook. The `-No*` switches opt out.
 | `-OutDir` | script folder | Absolute, relative, `~`, or `%VAR%`. Created if missing. |
 | `-NoHierarchy` | | Skip the Service → Product → SKU rollup **and** the workbook. Fast CSV-only pull. |
 | `-NoPivot` | | Keep the hierarchy CSV but skip the Excel workbook. |
+| `-NoAcr` | | Skip the ACR pull; workbook shows ACU only. |
 | `-NoAutoToken` | | Don't auto-capture a token; fail if none is supplied. |
 | `-Token` | | Bearer string, if you'd rather supply one. Takes precedence. |
 | `-Months` | `6` | Look-back window. Or use `-StartDate` / `-EndDate`. |
@@ -71,6 +75,18 @@ the Excel workbook. The `-No*` switches opt out.
 | `-NoTpidSubfolder` | | Write straight into `-OutDir`. |
 | `-CustomerName` | *looked up* | Override the auto-resolved name. |
 | `-Throttle` | `8` | Parallel requests (PS7 only). `1` forces sequential. |
+| `-PbiProxyPath` | *auto* | Path to the PBI-MCP-Proxy clone, if not in a default location. |
+
+### `Get-CxoAcr.py`
+Pulls ACR by service level from the MSA semantic model through the local
+PBI-MCP-Proxy. Invoked automatically by the main script; run standalone to
+refresh ACR without re-pulling consumption.
+
+```bash
+python Get-CxoAcr.py --tpid 642489 --start 2026-02-01 --end 2026-07-31 -o acr.csv
+```
+
+Run it with the **proxy's venv python** (it imports `pbi_mcp_proxy`).
 
 ### `Get-CxoToken.ps1`
 Launches Edge with the DevTools Protocol, loads the two CX Observe pages that call
@@ -107,14 +123,15 @@ out/642489_MORGAN_STANLEY/
 ├── 642489_MORGAN_STANLEY_consumptionunits_SubscriptionName.csv  # 1,244
 ├── 642489_MORGAN_STANLEY_consumptionunits_SubscriptionGuid.csv  # 1,350
 ├── 642489_MORGAN_STANLEY_product_sku_hierarchy.csv              # 1,086
+├── 642489_MORGAN_STANLEY_acr.csv                                #   380 (ACR by level)
 └── 642489_MORGAN_STANLEY_Pivot.xlsx
 ```
 
 **The workbook** has three sheets:
 
-- **Pivot** — collapsible Service → Product → SKU outline with ACU, ACU/mo, % of
-  parent, % of total, and data bars. Opens at Service/Product level; use the
-  `1 2 3` outline buttons to drill in.
+- **Pivot** — collapsible Service → Product → SKU outline with ACU, ACU/mo,
+  % of parent, % of total, ACR, ACR/mo, and data bars. Opens at Service/Product
+  level; use the `1 2 3` outline buttons to drill in.
 - **Data** — flat rows as a named table (`ConsumptionData`) for your own PivotTables.
 - **Top SKUs** — top 50 ranked, with parent product and service.
 
@@ -128,6 +145,66 @@ Eadsv5 Series spend, and AI Credit is 81% of GitHub Copilot.
 > The hierarchy CSV also carries a `ProductACU` column — the parent product's total,
 > repeated on every SKU row as a denominator. **Never sum it**; it double-counts.
 > Sum `SKU_ACU` instead. It's deliberately left out of the workbook.
+
+---
+
+## ACR (Azure Consumed Revenue)
+
+ACU is a normalized usage index, not money. ACR is the actual dollars, and it comes
+from a different system — the **MSA** semantic model
+(`MSA_AzureConsumption_Enterprise`, artifact `726c8fed-367a-4249-b685-e4e22ca82b3d`),
+reached through the local [PBI-MCP-Proxy](https://github.com/mcaps-microsoft/PBI-MCP-Proxy),
+which authenticates from your existing `az login`.
+
+### Setup (one time)
+
+```powershell
+winget install astral-sh.uv          # optional; pip works too
+cd "$HOME\OneDrive - Microsoft\GitHub"
+git clone https://github.com/mcaps-microsoft/PBI-MCP-Proxy.git
+cd PBI-MCP-Proxy
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+```
+
+`uv sync` is the documented path, but uv bundles its own TLS stack and fails on
+networks that inspect TLS to `files.pythonhosted.org`. pip uses the Windows cert
+store and works. Then right-click `.venv` → **Free up space** so OneDrive stops
+syncing ~2,600 files.
+
+The main script finds the proxy automatically in `OneDrive - Microsoft\GitHub\` or
+`~\repos\`; use `-PbiProxyPath` for anywhere else.
+
+### ACR stops at Product (L4)
+
+**This is a real limitation, not a bug.** The MSA model has `ServiceLevel1-4` but
+no `ServiceLevel5`. The `WWBI_ACRSL5` model does have SL5 — but it holds 49,311
+TPIDs and is RLS-scoped to a different portfolio, so accounts you manage return
+zero rows even though the report renders.
+
+So SKU rows in the workbook are **intentionally blank** in the ACR columns.
+Allocating a product's ACR across its SKUs by ACU share would look precise and be
+wrong: SKUs within a product have very different unit economics.
+
+Typical product-name match rate against CX Observe's taxonomy is ~95%. The
+unmatched remainder is mostly AHUB reclass rows and `UNKNOWN`, which exist in the
+finance taxonomy but not in CX Observe's.
+
+### Pre-credit / gross
+
+MSA reports **pre-credit / gross** ACR, so it reads higher than the finance-net
+view in C360 or FinHub. The Pivot sheet carries a red note saying so. Don't
+reconcile these figures to an invoice.
+
+### Two traps worth knowing
+
+- **The service truncates at 250 rows by default and says nothing.** An early
+  Elevance pull reported $37.6M; the real figure was $68.3M once the cap was
+  lifted — 45% missing, including their largest product at $28M. `Get-CxoAcr.py`
+  passes `maxRows=1000` explicitly and warns if the cap is hit.
+- **Microsoft fiscal years start in July**, so `FY26-Jul` is *July 2025*.
+  Filtering on fiscal-month labels silently shifts the window by a year. The
+  script filters on `DateID` (`YYYYMMDD`) instead.
 
 ---
 
@@ -224,6 +301,23 @@ these scripts use it.
 
 ---
 
+## Sources evaluated for ACR
+
+For anyone who wonders why ACR comes from Power BI and not somewhere more obvious:
+
+| Source | Outcome |
+|---|---|
+| **MSA (Power BI)** | ✅ **In use.** TPID + ServiceLevel1-4. Pre-credit/gross. |
+| CX Observe `ch:aspect:revenue` | ❌ HTTP 403 — no entitlement. |
+| Customer 360 GraphQL | ❌ `ACCOUNT_DATA_ACCESS_DENIED` on `azureConsumedRevenue`. Identity queries work, revenue doesn't. |
+| FinHub (SSAS cube) | ❌ Global ACR works, but TPID members are RLS-hidden — only the "All" member resolves. |
+| WWBI_ACRSL5 (Power BI) | ❌ Has ServiceLevel5, but is RLS-scoped to a different 49,311-TPID portfolio. |
+
+If your entitlements differ, `WWBI_ACRSL5` (`6b73b79c-2173-4ee1-b921-b30e3d306c4f`)
+is the one to try — it would unlock true SKU-level ACR.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -233,5 +327,8 @@ these scripts use it.
 | Token capture times out | Run `.\Get-CxoToken.ps1 -Visible` and finish signing in. |
 | Customer name not resolved | Pass `-CustomerName 'NAME'`. |
 | No workbook produced | Python or `openpyxl` missing — the pull still succeeds and warns. |
+| No ACR columns | PBI-MCP-Proxy venv not found. Check `-PbiProxyPath`, or use `-NoAcr` to silence. |
+| ACR pull fails on auth | `az login` expired. Re-run `az login`. |
+| ACR total looks low | You hit the row cap. Raise `--max-rows` on `Get-CxoAcr.py`. |
 | Run is slow | You're on PS 5.1 (sequential). Install PS7, raise `-Throttle`, or use `-NoHierarchy`. |
-| `AADSTS65001` | Expected from Azure CLI; it isn't consented to this API. |
+| `AADSTS65001` | Expected from Azure CLI; it isn't consented to the CX Observe API. |

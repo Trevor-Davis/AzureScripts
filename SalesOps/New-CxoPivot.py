@@ -41,6 +41,9 @@ THIN = Side(style="thin", color="BFBFBF")
 # "-" for zero that Accounting gives you.
 ACCT = '_(* #,##0_);_(* (#,##0);_(* "-"_);_(@_)'
 
+# Same, but with $ - used only for ACR columns, which really are dollars.
+ACCT_USD = '_($* #,##0_);_($* (#,##0);_($* "-"_);_(@_)'
+
 
 def load(path):
     rows = []
@@ -74,7 +77,35 @@ def fmt_months(months):
     return f"{int(months)} mo" if float(months).is_integer() else f"{months:g} mo"
 
 
-def build(rows, out_path, title, top_n, months):
+def load_acr(path):
+    """Load the ACR CSV from Get-CxoAcr.py into {dimension: {name: acr}}."""
+    if not path:
+        return {}, None
+    if not os.path.isfile(path):
+        print(f"warning: ACR file not found, skipping: {path}", file=sys.stderr)
+        return {}, None
+    out, measure = {}, None
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        for r in csv.DictReader(fh):
+            dim = (r.get("Dimension") or "").strip()
+            name = (r.get("Name") or "").strip()
+            if not dim or not name:
+                continue
+            try:
+                val = float(r.get("ACR") or 0)
+            except ValueError:
+                val = 0.0
+            out.setdefault(dim, {})[name] = val
+            measure = measure or (r.get("Measure") or "").strip()
+    return out, measure
+
+
+def build(rows, out_path, title, top_n, months, acr=None, acr_measure=None):
+    acr = acr or {}
+    acr_l2 = acr.get("L2_ServiceName", {})
+    acr_l4 = acr.get("L4_ProductName", {})
+    has_acr = bool(acr_l4)
+
     tree = OrderedDict()
     for r in rows:
         tree.setdefault(r["svc"], OrderedDict()).setdefault(r["prod"], []).append(r)
@@ -86,6 +117,7 @@ def build(rows, out_path, title, top_n, months):
 
     label = fmt_months(months)
     acu_hdr = f"ACU ({label})" if label else "ACU"
+    acr_hdr = f"ACR ({label})" if label else "ACR"
     per_mo = bool(label)          # only offer a monthly column when we know the span
 
     wb = Workbook()
@@ -141,11 +173,20 @@ def build(rows, out_path, title, top_n, months):
                "Confidential \\ Microsoft FTE.")
     pv["A2"] = sub
     pv["A2"].font = Font(size=9, italic=True, color="595959")
+    if has_acr:
+        pv["A3"] = (f"ACR ({acr_measure or '$ ACR'}) from the MSA model is available to "
+                    "Product (L4) only - SKU rows are intentionally blank. "
+                    "MSA reports PRE-CREDIT / GROSS revenue; do not reconcile to an invoice.")
+        pv["A3"].font = Font(size=9, italic=True, color="C00000")
 
     heads = ["Service / Product / SKU", "Level", acu_hdr]
     if per_mo:
         heads.append("ACU / mo")
     heads += ["% of Parent", "% of Total"]
+    if has_acr:
+        heads.append(acr_hdr)
+        if per_mo:
+            heads.append("ACR / mo")
 
     r0 = 4
     for j, h in enumerate(heads, 1):
@@ -158,6 +199,8 @@ def build(rows, out_path, title, top_n, months):
     p_mo = 4 if per_mo else None
     p_parent = 5 if per_mo else 4
     p_total = 6 if per_mo else 5
+    p_acr = (7 if per_mo else 6) if has_acr else None
+    p_acrmo = (8 if per_mo else None) if has_acr else None
 
     DL = f"Data!$D$2:$D${n}"
     SVC_RNG = f"Data!$A$2:$A${n}"
@@ -172,6 +215,10 @@ def build(rows, out_path, title, top_n, months):
         pv.cell(r, p_mo, f"=C{r}/{months}").font = Font(bold=True)
     pv.cell(r, p_parent, 1)
     pv.cell(r, p_total, 1)
+    if has_acr:
+        pv.cell(r, p_acr, round(sum(acr_l4.values()), 2)).font = Font(bold=True)
+        if per_mo:
+            pv.cell(r, p_acrmo, f"={chr(64+p_acr)}{r}/{months}").font = Font(bold=True)
     for j in range(1, ncols + 1):
         pv.cell(r, j).fill = TOT_FILL
     r += 1
@@ -185,6 +232,12 @@ def build(rows, out_path, title, top_n, months):
             pv.cell(r, p_mo, f"=C{r}/{months}")
         pv.cell(r, p_parent, f"=IFERROR(C{r}/$C${total_row},0)")
         pv.cell(r, p_total, f"=IFERROR(C{r}/$C${total_row},0)")
+        if has_acr:
+            v = acr_l2.get(s)
+            if v is not None:
+                pv.cell(r, p_acr, round(v, 2)).font = Font(bold=True)
+                if per_mo:
+                    pv.cell(r, p_acrmo, f"={chr(64+p_acr)}{r}/{months}")
         for j in range(1, ncols + 1):
             pv.cell(r, j).fill = SVC_FILL
         r += 1
@@ -200,6 +253,12 @@ def build(rows, out_path, title, top_n, months):
                 pv.cell(r, p_mo, f"=C{r}/{months}")
             pv.cell(r, p_parent, f"=IFERROR(C{r}/C{sr},0)")
             pv.cell(r, p_total, f"=IFERROR(C{r}/$C${total_row},0)")
+            if has_acr:
+                v = acr_l4.get(pr)
+                if v is not None:
+                    pv.cell(r, p_acr, round(v, 2))
+                    if per_mo:
+                        pv.cell(r, p_acrmo, f"={chr(64+p_acr)}{r}/{months}")
             for j in range(1, ncols + 1):
                 pv.cell(r, j).fill = PRD_FILL
             pv.row_dimensions[r].outlineLevel = 1
@@ -213,6 +272,7 @@ def build(rows, out_path, title, top_n, months):
                     pv.cell(r, p_mo, f"=C{r}/{months}")
                 pv.cell(r, p_parent, f"=IFERROR(C{r}/C{prr},0)")
                 pv.cell(r, p_total, f"=IFERROR(C{r}/$C${total_row},0)")
+                # ACR is only available to Product (L4); SKU rows stay blank on purpose.
                 pv.row_dimensions[r].outlineLevel = 2
                 pv.row_dimensions[r].hidden = True
                 r += 1
@@ -224,13 +284,21 @@ def build(rows, out_path, title, top_n, months):
             pv.cell(i, p_mo).number_format = ACCT
         pv.cell(i, p_parent).number_format = "0.0%"
         pv.cell(i, p_total).number_format = "0.0%"
+        if has_acr:
+            pv.cell(i, p_acr).number_format = ACCT_USD
+            if per_mo:
+                pv.cell(i, p_acrmo).number_format = ACCT_USD
         pv.cell(i, 2).alignment = Alignment(horizontal="center")
         for j in range(1, ncols + 1):
             pv.cell(i, j).border = Border(bottom=THIN)
 
     pv.sheet_properties.outlinePr.summaryBelow = False
     pv_widths = [56, 10, 20] + ([18] if per_mo else []) + [12, 12]
-    for c, w in zip("ABCDEF", pv_widths):
+    if has_acr:
+        pv_widths.append(20)
+        if per_mo:
+            pv_widths.append(18)
+    for c, w in zip("ABCDEFGH", pv_widths):
         pv.column_dimensions[c].width = w
     pv.freeze_panes = "A5"
     pv.conditional_formatting.add(
@@ -308,6 +376,7 @@ def main():
     ap.add_argument("--months", type=float,
                     help="months the ACU totals cover; labels the ACU column and drives "
                          "the ACU / mo column. Inferred from the sibling *_all.csv if omitted.")
+    ap.add_argument("--acr", help="ACR CSV from Get-CxoAcr.py; adds ACR columns at Product level")
     args = ap.parse_args()
 
     src = os.path.abspath(args.csv_path)
@@ -324,14 +393,27 @@ def main():
             stem = stem[: -len(suffix)]
             break
 
+    # default to a sibling <stem>_acr.csv when --acr was not given
+    acr_path = args.acr
+    if not acr_path:
+        guess = os.path.join(os.path.dirname(src), f"{stem}_acr.csv")
+        if os.path.isfile(guess):
+            acr_path = guess
+
+    acr, acr_measure = load_acr(acr_path)
+
     out = args.output or os.path.join(os.path.dirname(src), f"{stem}_Pivot.xlsx")
     title = args.title or f"{stem.replace('_', ' ')} - Azure Consumption by Service > Product > SKU"
 
-    data_rows, pivot_rows, grand = build(load(src), out, title, args.top, months)
+    data_rows, pivot_rows, grand = build(load(src), out, title, args.top, months,
+                                         acr=acr, acr_measure=acr_measure)
     print(f"saved       : {out}")
     print(f"data rows   : {data_rows}")
     print(f"pivot rows  : {pivot_rows}")
     print(f"grand total : {grand:,.2f} ACU")
+    if acr:
+        tot = sum(acr.get("L4_ProductName", {}).values())
+        print(f"ACR         : ${tot:,.2f} ({acr_measure or '$ ACR'}, product level)")
     if months:
         print(f"period      : {fmt_months(months)}  ({grand / months:,.2f} ACU/mo)")
     else:

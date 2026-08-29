@@ -102,6 +102,13 @@ param(
     # Skip the Excel pivot workbook that the hierarchy normally builds via New-CxoPivot.py.
     [switch]$NoPivot,
 
+    # Skip the ACR (Azure Consumed Revenue) pull. ACR comes from the MSA Power BI model
+    # via the local PBI-MCP-Proxy and is added to the workbook at Product (L4) level.
+    [switch]$NoAcr,
+
+    # Path to the PBI-MCP-Proxy clone, if it is not in one of the default locations.
+    [string]$PbiProxyPath,
+
     # Customer name used in the <TPID>_<CustomerName> folder and file names.
     # Looked up automatically from the CX Observe Customer domain; supply it to
     # skip the lookup or to override the official name.
@@ -221,8 +228,47 @@ function Get-TokenByDeviceCode {
     throw 'Device code sign-in timed out.'
 }
 
+function Get-CxoAcrData {
+    param([string]$OutDir, [string]$Stem, [datetime]$Start, [datetime]$End)
+
+    $root = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+    $puller = Join-Path $root 'Get-CxoAcr.py'
+    if (-not (Test-Path $puller)) {
+        Write-Warning "Get-CxoAcr.py not found in $root - skipping ACR."
+        return $null
+    }
+
+    # ACR needs the PBI-MCP-Proxy venv python (it imports pbi_mcp_proxy).
+    $candidates = @($PbiProxyPath) + @(
+        (Join-Path $env:USERPROFILE 'OneDrive - Microsoft\GitHub\PBI-MCP-Proxy'),
+        (Join-Path $env:USERPROFILE 'repos\PBI-MCP-Proxy')
+    ) | Where-Object { $_ }
+
+    $python = $null
+    foreach ($base in $candidates) {
+        $p = Join-Path $base '.venv\Scripts\python.exe'
+        if (Test-Path $p) { $python = $p; break }
+    }
+    if (-not $python) {
+        Write-Warning 'PBI-MCP-Proxy venv not found - skipping ACR. Use -PbiProxyPath to point at the clone.'
+        return $null
+    }
+
+    $acrPath = Join-Path $OutDir ("{0}_acr.csv" -f $Stem)
+    Write-Host 'Pulling ACR from the MSA model ...'
+    $out = & $python $puller --tpid $Tpid `
+                 --start $Start.ToString('yyyy-MM-dd') --end $End.ToString('yyyy-MM-dd') `
+                 -o $acrPath 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning ("ACR pull failed: {0}" -f ($out -join ' '))
+        return $null
+    }
+    $out | Where-Object { $_ -match '^(L\d|\s+L\d|ACR|L4 total)' } | ForEach-Object { Write-Host "  $_" }
+    return $acrPath
+}
+
 function New-CxoPivotWorkbook {
-    param([string]$HierarchyCsv, [string]$Title, [double]$PeriodMonths)
+    param([string]$HierarchyCsv, [string]$Title, [double]$PeriodMonths, [string]$AcrCsv)
 
     $root = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
     $builder = Join-Path $root 'New-CxoPivot.py'
@@ -244,6 +290,7 @@ function New-CxoPivotWorkbook {
     Write-Host 'Building Excel pivot workbook ...'
     $pyArgs = @($builder, $HierarchyCsv, '--title', $Title)
     if ($PeriodMonths -gt 0) { $pyArgs += @('--months', $PeriodMonths) }
+    if ($AcrCsv -and (Test-Path $AcrCsv)) { $pyArgs += @('--acr', $AcrCsv) }
     $out = & $python @pyArgs 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Warning ("Pivot build failed: {0}" -f ($out -join ' '))
@@ -624,7 +671,13 @@ if (-not $NoHierarchy) {
             [math]::Max(1, [math]::Round((($EndDate - $StartDate).TotalDays / 30.4375), 2))
         } else { $Months }
 
-        $xlsx = New-CxoPivotWorkbook -HierarchyCsv $treePath -Title $title -PeriodMonths $periodMonths
+        $acrCsv = $null
+        if (-not $NoAcr) {
+            $acrCsv = Get-CxoAcrData -OutDir $OutDir -Stem $Stem -Start $StartDate -End $EndDate
+        }
+
+        $xlsx = New-CxoPivotWorkbook -HierarchyCsv $treePath -Title $title `
+                    -PeriodMonths $periodMonths -AcrCsv $acrCsv
         if ($xlsx) { Write-Host ("Workbook : {0}" -f $xlsx) -ForegroundColor Cyan }
     }
 }
